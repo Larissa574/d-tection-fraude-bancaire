@@ -1,11 +1,11 @@
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
+from history_store import compute_kpis, load_history
+
 
 st.title("Dashboard KPI - Détection de fraude")
-st.caption("KPI calculés sur un CSV uploadé ou sur le fichier local `creditcard.csv`.")
+st.caption("KPI basés sur l'historique des analyses effectuées dans l'application.")
 
 
 def _detect_amount_column(df: pd.DataFrame) -> str:
@@ -56,57 +56,60 @@ def _build_hour_column(df: pd.DataFrame) -> pd.Series:
     return pd.Series(df.index % 24, index=df.index, dtype="int64")
 
 
-def _load_dashboard_df(uploaded_csv):
-    if uploaded_csv is not None:
-        df = pd.read_csv(uploaded_csv)
-        return df, f"CSV uploadé: {uploaded_csv.name}"
+entries = load_history()
 
-    default_csv = Path(__file__).resolve().parent.parent.parent / "creditcard.csv"
-    if not default_csv.exists():
-        raise FileNotFoundError("Fichier `creditcard.csv` introuvable.")
-
-    df = pd.read_csv(default_csv)
-    return df, "Source locale: creditcard.csv"
-
-
-uploaded_csv = st.file_uploader("Uploader un CSV pour le dashboard (optionnel)", type="csv")
-
-prediction_available = st.session_state.get("csv_analysis") is not None
-use_prediction = False
-
-if prediction_available:
-    source_choice = st.radio(
-        "Source des données",
-        ["Résultats de la dernière prédiction", "creditcard.csv / CSV uploadé"],
-        horizontal=True,
-    )
-    use_prediction = source_choice == "Résultats de la dernière prédiction"
-
-try:
-    if use_prediction:
-        data = st.session_state["csv_analysis"]
-        source_label = "Source: résultats de la dernière prédiction"
-    else:
-        data, source_label = _load_dashboard_df(uploaded_csv)
-    fraud_flag = _detect_fraud_flag(data)
-    amount_col = _detect_amount_column(data)
-    amount = pd.to_numeric(data[amount_col], errors="coerce").fillna(0.0)
-    hours = _build_hour_column(data)
-
-    total_transactions = int(len(data))
-    total_frauds = int(fraud_flag.sum())
-    montant_total_bloque_xof = float(amount[fraud_flag == 1].sum())
-    taux_fraude = (total_frauds / total_transactions * 100) if total_transactions else 0.0
-
-    st.info(source_label)
+if not entries:
+    st.info("Aucune analyse enregistrée pour le moment. Lancez d'abord une prédiction.")
+else:
+    kpis = compute_kpis(entries)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Nombre total transactions analysées", f"{total_transactions:,}".replace(",", " "))
-    c2.metric("Nombre fraudes détectées", f"{total_frauds:,}".replace(",", " "))
-    c3.metric("Montant total bloqué (XOF)", f"{montant_total_bloque_xof:,.0f}".replace(",", " "))
-    c4.metric("Taux de fraude (%)", f"{taux_fraude:.2f}%")
+    c1.metric("Nombre analyses", f"{kpis['total_analyses']:,}".replace(",", " "))
+    c2.metric("Transactions analysées", f"{kpis['total_transactions']:,}".replace(",", " "))
+    c3.metric("Fraudes détectées", f"{kpis['total_frauds']:,}".replace(",", " "))
+    c4.metric("Montant total bloqué (XOF)", f"{kpis['total_blocked_amount']:,.0f}".replace(",", " "))
 
-    st.subheader("Graphique fraudes par heure")
+    st.metric("Taux de fraude global (%)", f"{kpis['fraud_rate']:.2f}")
+
+    history_df = pd.DataFrame(entries)
+    history_df["date"] = pd.to_datetime(history_df["date"], errors="coerce")
+
+    st.subheader("Fraudes détectées par jour")
+    daily_frauds = (
+        history_df.groupby(history_df["date"].dt.date, as_index=True)["frauds"]
+        .sum()
+        .rename("Fraudes")
+        .to_frame()
+    )
+    st.bar_chart(daily_frauds)
+
+    st.subheader("Transactions analysées par mode")
+    by_mode = (
+        history_df.groupby("mode", as_index=True)["total_transactions"]
+        .sum()
+        .rename("Transactions")
+        .to_frame()
+    )
+    st.bar_chart(by_mode)
+
+if st.session_state.get("csv_analysis") is not None:
+    st.subheader("Détails de la dernière analyse (session courante)")
+    latest_df = st.session_state["csv_analysis"]
+    fraud_flag = _detect_fraud_flag(latest_df)
+    amount_col = _detect_amount_column(latest_df)
+    amount = pd.to_numeric(latest_df[amount_col], errors="coerce").fillna(0.0)
+    hours = _build_hour_column(latest_df)
+
+    total_transactions = int(len(latest_df))
+    total_frauds = int(fraud_flag.sum())
+    taux_fraude = (total_frauds / total_transactions * 100) if total_transactions else 0.0
+
+    l1, l2, l3 = st.columns(3)
+    l1.metric("Transactions session", total_transactions)
+    l2.metric("Fraudes session", total_frauds)
+    l3.metric("Taux session (%)", f"{taux_fraude:.2f}")
+
+    st.subheader("Fraudes par heure (dernière analyse)")
     fraude_par_heure = (
         pd.DataFrame({"heure": hours, "fraude": fraud_flag})
         .query("fraude == 1")
@@ -118,7 +121,7 @@ try:
     )
     st.bar_chart(fraude_par_heure)
 
-    st.subheader("Graphique montant moyen fraude vs légitime")
+    st.subheader("Montant moyen fraude vs légitime (dernière analyse)")
     montant_moyen = (
         pd.DataFrame({"flag": fraud_flag, "amount": amount})
         .groupby("flag", as_index=False)["amount"]
@@ -127,6 +130,3 @@ try:
     montant_moyen["Type"] = montant_moyen["flag"].map({0: "LÉGITIME", 1: "FRAUDE"})
     montant_moyen = montant_moyen.set_index("Type")[["amount"]].rename(columns={"amount": "Montant moyen (XOF)"})
     st.bar_chart(montant_moyen)
-
-except Exception as err:
-    st.error(f"Impossible de calculer le dashboard : {err}")

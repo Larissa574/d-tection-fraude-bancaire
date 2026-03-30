@@ -1,8 +1,57 @@
-{
-  "2026-03-16": {
-    "transactions": 284807,
-    "fraudes": 492,
-    "montant_bloque": 60127.96999999997,
-    "updated_at": "2026-03-16"
+[
+  {
+    "timestamp": "2026-03-31 00:12:55",
+    "date": "2026-03-31",
+    "mode": "manuel",
+    "source": "saisie_manuelle",
+    "total_transactions": 1,
+    "frauds": 0,
+    "blocked_amount": 0.0,
+    "mean_probability": 0.009999999776482582,
+    "max_probability": 0.009999999776482582
+  },
+  {
+    "timestamp": "2026-03-31 00:13:00",
+    "date": "2026-03-31",
+    "mode": "manuel",
+    "source": "saisie_manuelle",
+    "total_transactions": 1,
+    "frauds": 0,
+    "blocked_amount": 0.0,
+    "mean_probability": 0.009999999776482582,
+    "max_probability": 0.009999999776482582
+  },
+  {
+    "timestamp": "2026-03-31 00:13:22",
+    "date": "2026-03-31",
+    "mode": "manuel",
+    "source": "saisie_manuelle",
+    "total_transactions": 1,
+    "frauds": 0,
+    "blocked_amount": 0.0,
+    "mean_probability": 0.05000000074505806,
+    "max_probability": 0.05000000074505806
+  },
+  {
+    "timestamp": "2026-03-31 00:13:34",
+    "date": "2026-03-31",
+    "mode": "manuel",
+    "source": "saisie_manuelle",
+    "total_transactions": 1,
+    "frauds": 0,
+    "blocked_amount": 0.0,
+    "mean_probability": 0.23000000417232513,
+    "max_probability": 0.23000000417232513
+  },
+  {
+    "timestamp": "2026-03-31 00:24:22",
+    "date": "2026-03-31",
+    "mode": "csv",
+    "source": "creditcard.csv",
+    "total_transactions": 284807,
+    "frauds": 484,
+    "blocked_amount": 56573.13,
+    "mean_probability": 0.21933773159980774,
+    "max_probability": 100.0
   }
-}
+]

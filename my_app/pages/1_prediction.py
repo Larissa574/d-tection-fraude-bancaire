@@ -1,41 +1,31 @@
-import streamlit as st
-import pandas as pd
-import joblib
-from pathlib import Path
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 
-# -------------------------
-# Interface
-# -------------------------
+import joblib
+import pandas as pd
+import streamlit as st
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-st.markdown("""
+from history_store import append_history_entry
+
+
+st.markdown(
+    """
 ### Détection de fraude bancaire
 
-Bienvenue. Cette application aide la banque à détecter les transactions frauduleuses.
-Veuillez uploader un fichier CSV contenant les transactions (Mode 2).
-""")
-
-st.warning("⚠️ Ce modèle est un outil d'aide et ne remplace pas la vérification humaine.")
-
-st.markdown("#### Mode 2 : Upload fichier CSV")
-
-# -------------------------
-# Upload fichier
-# -------------------------
-
-csv = st.file_uploader(
-    "Glissez et déposez un fichier CSV",
-    type="csv",
-    help="Seuls les fichiers CSV sont autorisés"
+Cette application propose 2 modes:
+- Mode 1: saisie manuelle d'une transaction
+- Mode 2: upload d'un fichier CSV
+"""
 )
+st.warning("Ce modèle est un outil d'aide et ne remplace pas la vérification humaine.")
 
-# -------------------------
-# Chargement du modèle
-# -------------------------
 
 @st.cache_resource
 def load_model():
-
     base_dir = Path(__file__).resolve().parent.parent.parent
     models_dir = base_dir / "models"
 
@@ -44,68 +34,45 @@ def load_model():
         return joblib.load(preferred_model)
 
     model_files = list(models_dir.glob("*.joblib"))
-
     if not model_files:
-        st.error("Aucun modèle trouvé dans le dossier models.")
-        st.stop()
+        raise FileNotFoundError("Aucun modèle trouvé dans le dossier models.")
 
     latest_model = max(model_files, key=lambda x: x.stat().st_mtime)
-
     return joblib.load(latest_model)
 
 
-artifact = load_model()
-
-modele = artifact["model"]
-preprocessor = artifact["preprocessor"]
-threshold = artifact["threshold"]
-features = artifact["features"]
-
-
-def analyze_dataframe(df):
+def analyze_dataframe(df, model, preprocessor, threshold, features):
     missing_columns = [column for column in features if column not in df.columns]
     if missing_columns:
         missing_preview = ", ".join(missing_columns[:10])
-        raise ValueError(
-            f"Colonnes manquantes dans le CSV: {missing_preview}"
-        )
+        raise ValueError(f"Colonnes manquantes dans le CSV: {missing_preview}")
 
-    X = df[features]
-    X_processed = preprocessor.transform(X)
-    proba = modele.predict_proba(X_processed)[:, 1]
+    x_data = df[features]
+    x_processed = preprocessor.transform(x_data)
+    proba = model.predict_proba(x_processed)[:, 1]
     prediction = (proba >= threshold).astype(int)
 
     result_df = df.copy()
     result_df["fraude_predite"] = prediction
     result_df["Probabilité fraude (%)"] = (proba * 100).round(2)
-    result_df["Résultat"] = result_df["fraude_predite"].map(
-        {0: "✅ LÉGITIME", 1: "🚨 FRAUDE"}
-    )
+    result_df["Résultat"] = result_df["fraude_predite"].map({0: "LÉGITIME", 1: "FRAUDE"})
     return result_df
-
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import A4
-from io import BytesIO
 
 
 def generate_pdf_report(lines):
     if not lines:
         lines = ["Rapport vide"]
 
-    buffer = BytesIO()  # fichier en mémoire (important pour Streamlit)
-
+    buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
-
     content = []
 
     for line in lines:
         content.append(Paragraph(str(line), styles["Normal"]))
-        content.append(Spacer(1, 8))  # petit espace entre lignes
+        content.append(Spacer(1, 8))
 
     doc.build(content)
-
     buffer.seek(0)
     return buffer.read()
 
@@ -119,103 +86,162 @@ def build_report_lines(result_df, source_name):
     lines = [
         "Rapport de détection de fraude bancaire",
         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Fichier source: {source_name}",
+        f"Source: {source_name}",
         "",
         f"Transactions analysées: {total_transactions}",
         f"Fraudes détectées: {fraude_total}",
         f"Transactions légitimes: {legit_total}",
         f"Probabilité max observée: {max_proba:.2f}%",
-        "",
-        "Top transactions suspectes:",
     ]
-
-    suspect_rows = result_df[result_df["fraude_predite"] == 1].copy()
-    suspect_rows = suspect_rows.sort_values("Probabilité fraude (%)", ascending=False).head(20)
-
-    if suspect_rows.empty:
-        lines.append("Aucune transaction frauduleuse détectée.")
-    else:
-        for row_index, row in suspect_rows.iterrows():
-            lines.append(
-                f"- Ligne {row_index + 1}: probabilité {row['Probabilité fraude (%)']:.2f}%"
-            )
 
     return lines
 
 
-if "csv_analysis" not in st.session_state:
-    st.session_state["csv_analysis"] = None
-if "csv_file_signature" not in st.session_state:
-    st.session_state["csv_file_signature"] = None
-if "csv_report_pdf" not in st.session_state:
-    st.session_state["csv_report_pdf"] = None
+def persist_summary(result_df, mode, source):
+    total_transactions = int(len(result_df))
+    fraude_total = int(result_df["fraude_predite"].sum())
+    blocked_amount = 0.0
+    if "Amount" in result_df.columns:
+        amount_series = pd.to_numeric(result_df["Amount"], errors="coerce").fillna(0.0)
+        blocked_amount = float(amount_series[result_df["fraude_predite"] == 1].sum())
 
-# -------------------------
-# Analyse des données
-# -------------------------
+    append_history_entry(
+        {
+            "mode": mode,
+            "source": source,
+            "total_transactions": total_transactions,
+            "frauds": fraude_total,
+            "blocked_amount": blocked_amount,
+            "mean_probability": float(result_df["Probabilité fraude (%)"].mean()),
+            "max_probability": float(result_df["Probabilité fraude (%)"].max()),
+        }
+    )
 
-if csv is not None:
 
-    file_signature = f"{csv.name}-{csv.size}"
-    if st.session_state["csv_file_signature"] != file_signature:
-        st.session_state["csv_file_signature"] = file_signature
-        st.session_state["csv_analysis"] = None
-        st.session_state["csv_report_pdf"] = None
+def render_result(analysis_df, report_pdf):
+    fraude_total = int(analysis_df["fraude_predite"].sum())
+    total_transactions = len(analysis_df)
 
-    df = pd.read_csv(csv)
+    if fraude_total > 0:
+        st.error(f"FRAUDE - {fraude_total} transaction(s) suspecte(s) détectée(s)")
+    else:
+        st.success("LÉGITIME - aucune transaction suspecte détectée")
 
-    st.subheader("Aperçu des données")
-    st.dataframe(df.head())
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Transactions analysées", total_transactions)
+    col2.metric("Fraudes détectées", fraude_total)
+    col3.metric("Probabilité moyenne", f"{analysis_df['Probabilité fraude (%)'].mean():.2f}%")
 
-    st.write("Nombre de transactions :", df.shape[0])
+    st.subheader("Résultats par transaction")
+    visible_columns = ["Résultat", "Probabilité fraude (%)"]
+    for optional_col in ["Amount", "Time"]:
+        if optional_col in analysis_df.columns:
+            visible_columns.append(optional_col)
+    st.dataframe(analysis_df[visible_columns], use_container_width=True)
 
-    if st.button("Lancer l'analyse de fraude"):
-
-        try:
-            analysis_df = analyze_dataframe(df)
-            st.session_state["csv_analysis"] = analysis_df
-            report_lines = build_report_lines(analysis_df, csv.name)
-            st.session_state["csv_report_pdf"] = generate_pdf_report(report_lines)
-            st.success("Analyse terminée")
-
-        except Exception as e:
-            st.error(f"Erreur pendant l'analyse : {e}")
-
-    analysis_df = st.session_state["csv_analysis"]
-    if analysis_df is not None:
-        fraude_total = int(analysis_df["fraude_predite"].sum())
-        total_transactions = len(analysis_df)
-
-        if fraude_total > 0:
-            st.error(f"🚨 FRAUDE — {fraude_total} transaction(s) suspecte(s) détectée(s)")
-        else:
-            st.success("✅ LÉGITIME — aucune transaction suspecte détectée")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Transactions analysées", total_transactions)
-        col2.metric("Fraudes détectées", fraude_total)
-        col3.metric(
-            "Probabilité moyenne",
-            f"{analysis_df['Probabilité fraude (%)'].mean():.2f}%",
+    if report_pdf is not None:
+        report_name = f"rapport_fraude_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        st.download_button(
+            "Télécharger le rapport PDF",
+            data=report_pdf,
+            file_name=report_name,
+            mime="application/pdf",
+            use_container_width=True,
         )
 
-        st.subheader("Résultats par transaction")
-        visible_columns = ["Résultat", "Probabilité fraude (%)"]
-        for optional_col in ["Amount", "Time"]:
-            if optional_col in analysis_df.columns:
-                visible_columns.append(optional_col)
 
-        st.dataframe(analysis_df[visible_columns])
+if "last_analysis_df" not in st.session_state:
+    st.session_state["last_analysis_df"] = None
+if "last_report_pdf" not in st.session_state:
+    st.session_state["last_report_pdf"] = None
 
-        if st.session_state["csv_report_pdf"] is not None:
-            report_name = f"rapport_fraude_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            st.download_button(
-                "Télécharger le rapport PDF",
-                data=st.session_state["csv_report_pdf"],
-                file_name=report_name,
-                mime="application/pdf",
-                use_container_width=True,
-            )
 
-else:
-    st.info("Veuillez uploader un fichier CSV pour lancer l'analyse.")
+try:
+    artifact = load_model()
+except Exception as load_err:
+    st.error(f"Impossible de charger le modèle: {load_err}")
+    st.stop()
+
+modele = artifact["model"]
+preprocessor = artifact["preprocessor"]
+threshold = float(artifact["threshold"])
+features = artifact["features"]
+
+tab_manual, tab_csv = st.tabs(["Mode 1 - Saisie manuelle", "Mode 2 - Upload CSV"])
+
+with tab_manual:
+    st.markdown("#### Entrer les valeurs de transaction")
+    st.caption("L'analyse démarre uniquement quand vous cliquez sur le bouton 'Analyser la transaction'.")
+
+    with st.form("manual_prediction_form", enter_to_submit=False):
+        form_values = {}
+        cols = st.columns(3)
+
+        for index, feature_name in enumerate(features):
+            default_value = 0.0
+            step_value = 0.01
+            if feature_name == "Amount":
+                default_value = 100.0
+            if feature_name == "Time":
+                step_value = 1.0
+
+            with cols[index % 3]:
+                form_values[feature_name] = st.number_input(
+                    feature_name,
+                    value=float(default_value),
+                    step=float(step_value),
+                    format="%.6f",
+                )
+
+        submit_manual = st.form_submit_button("Analyser la transaction")
+
+    if submit_manual:
+        try:
+            input_df = pd.DataFrame([form_values], columns=features)
+            result_df = analyze_dataframe(input_df, modele, preprocessor, threshold, features)
+            report_lines = build_report_lines(result_df, "saisie_manuelle")
+            report_pdf = generate_pdf_report(report_lines)
+
+            st.session_state["last_analysis_df"] = result_df
+            st.session_state["last_report_pdf"] = report_pdf
+            st.session_state["csv_analysis"] = result_df
+
+            persist_summary(result_df, mode="manuel", source="saisie_manuelle")
+            st.success("Analyse manuelle terminée")
+        except Exception as manual_err:
+            st.error(f"Erreur pendant l'analyse manuelle: {manual_err}")
+
+with tab_csv:
+    st.markdown("#### Upload d'un fichier CSV")
+    csv_file = st.file_uploader(
+        "Glissez et déposez un fichier CSV",
+        type="csv",
+        help="Le fichier doit contenir les colonnes utilisées par le modèle.",
+    )
+
+    if csv_file is not None:
+        try:
+            source_df = pd.read_csv(csv_file)
+            st.subheader("Aperçu des données")
+            st.dataframe(source_df.head(), use_container_width=True)
+            st.write("Nombre de transactions:", source_df.shape[0])
+
+            if st.button("Lancer l'analyse CSV"):
+                result_df = analyze_dataframe(source_df, modele, preprocessor, threshold, features)
+                report_lines = build_report_lines(result_df, csv_file.name)
+                report_pdf = generate_pdf_report(report_lines)
+
+                st.session_state["last_analysis_df"] = result_df
+                st.session_state["last_report_pdf"] = report_pdf
+                st.session_state["csv_analysis"] = result_df
+
+                persist_summary(result_df, mode="csv", source=csv_file.name)
+                st.success("Analyse CSV terminée")
+        except Exception as csv_err:
+            st.error(f"Erreur pendant l'analyse CSV: {csv_err}")
+    else:
+        st.info("Veuillez uploader un fichier CSV pour lancer l'analyse.")
+
+
+if st.session_state["last_analysis_df"] is not None:
+    render_result(st.session_state["last_analysis_df"], st.session_state["last_report_pdf"])

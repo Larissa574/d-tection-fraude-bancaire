@@ -1,7 +1,8 @@
-import csv
 from pathlib import Path
 
 import streamlit as st
+
+from history_store import compute_kpis, load_history
 
 
 st.set_page_config(page_title="AfriBank - Détection de fraude", layout="wide")
@@ -51,36 +52,6 @@ def apply_navy_white_theme():
     )
 
 
-@st.cache_data
-def _load_kpis():
-    csv_path = Path(__file__).resolve().parent.parent / "creditcard.csv"
-
-    if not csv_path.exists():
-        return None
-
-    transactions = 0
-    fraudes = 0
-    montant_bloque = 0.0
-
-    with csv_path.open("r", encoding="utf-8", newline="") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            transactions += 1
-            is_fraud = row.get("Class", "0").strip() == "1"
-            if is_fraud:
-                fraudes += 1
-                try:
-                    montant_bloque += float(row.get("Amount", 0.0) or 0.0)
-                except ValueError:
-                    pass
-
-    return {
-        "transactions": transactions,
-        "fraudes": fraudes,
-        "montant_bloque": montant_bloque,
-    }
-
-
 def main():
     apply_navy_white_theme()
 
@@ -94,36 +65,38 @@ def main():
         st.title("AfriBank")
         st.caption("Plateforme de détection de fraude bancaire")
 
-    kpis = _load_kpis()
+    entries = load_history()
+    kpis = compute_kpis(entries)
 
-    if kpis is None:
-        st.error("Fichier `creditcard.csv` introuvable. Les KPI ne peuvent pas être calculés.")
-        return
-
-    transactions = kpis["transactions"]
-    fraudes = kpis["fraudes"]
-    montant_bloque = kpis["montant_bloque"]
-    taux_fraude = (fraudes / transactions * 100) if transactions else 0.0
-    ticket_moyen = (montant_bloque / fraudes) if fraudes else 0.0
+    st.markdown("### Tableau de bord")
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Transactions analysées", f"{transactions:,}".replace(",", " "))
-    c2.metric("Fraudes détectées", f"{fraudes:,}".replace(",", " "))
-    c3.metric("Montant total bloqué (XOF)", f"{montant_bloque:,.0f}".replace(",", " "))
+    c1.metric("Analyses effectuées", f"{kpis['total_analyses']:,}".replace(",", " "))
+    c2.metric("Transactions analysées", f"{kpis['total_transactions']:,}".replace(",", " "))
+    c3.metric("Fraudes détectées", f"{kpis['total_frauds']:,}".replace(",", " "))
 
     s1, s2 = st.columns(2)
-    s1.metric("Taux de fraude", f"{taux_fraude:.3f}%")
-    s2.metric("Montant moyen bloqué / fraude (XOF)", f"{ticket_moyen:,.0f}".replace(",", " "))
+    s1.metric("Montant total bloqué (XOF)", f"{kpis['total_blocked_amount']:,.0f}".replace(",", " "))
+    s2.metric("Taux de fraude", f"{kpis['fraud_rate']:.3f}%")
+
+    if not entries:
+        st.info(
+            "Le tableau de bord est vide pour le moment. "
+            "Les indicateurs apparaîtront après vos premières prédictions (mode manuel ou CSV)."
+        )
+    else:
+        st.success("Historique chargé avec succès.")
+        st.caption(f"Dernière mise à jour: {entries[-1].get('timestamp', 'N/A')}")
 
     st.markdown(
         """
         ### Description
         AfriBank est un outil d'aide à la détection de transactions frauduleuses.
-        Les indicateurs ci-dessus sont calculés directement sur le jeu de données `creditcard.csv`.
+        Les KPI affichés ici sont calculés à partir de l'historique des analyses réalisées dans l'application.
         """
     )
 
-    st.success("👈 Utilisez le menu de gauche pour accéder aux modules de prédiction, performance et dashboard KPI.")
+    st.success("Utilisez le menu de gauche pour accéder aux modules de prédiction, performance et dashboard KPI.")
 
 
 if __name__ == "__main__":
